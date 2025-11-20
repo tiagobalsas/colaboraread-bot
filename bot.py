@@ -38,7 +38,7 @@ class PortalBot:
         self.username = os.getenv('PORTAL_USERNAME')
         self.password = os.getenv('PORTAL_PASSWORD')
         
-        # Configurar Chrome para Docker/Render - ESTÁVEL PARA 512MB
+        # Configurar Chrome - OTIMIZAÇÃO EXTREMA PARA 512MB
         chrome_options = Options()
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
@@ -54,9 +54,31 @@ class PortalBot:
         chrome_options.add_argument('--mute-audio')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         
-        # Limitar memória
-        chrome_options.add_argument('--max-old-space-size=256')
-        chrome_options.add_argument('--js-flags=--max-old-space-size=256')
+        # OTIMIZAÇÕES EXTREMAS DE MEMÓRIA (sem quebrar funcionalidade)
+        chrome_options.add_argument('--blink-settings=imagesEnabled=false')  # Não carregar imagens
+        chrome_options.add_argument('--disable-plugins')
+        chrome_options.add_argument('--disable-animations')
+        chrome_options.add_argument('--disable-smooth-scrolling')
+        chrome_options.add_argument('--disable-webgl')
+        chrome_options.add_argument('--disable-3d-apis')
+        chrome_options.add_argument('--disable-accelerated-2d-canvas')
+        chrome_options.add_argument('--disable-accelerated-video-decode')
+        chrome_options.add_argument('--disable-webrtc')
+        chrome_options.add_argument('--disable-audio-output')
+        
+        # Limitar memória ainda mais
+        chrome_options.add_argument('--max-old-space-size=128')
+        chrome_options.add_argument('--js-flags=--max-old-space-size=128')
+        
+        # Preferências para não carregar mídia pesada
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,  # Bloquear imagens
+            "profile.default_content_setting_values.notifications": 2,
+            "profile.managed_default_content_settings.popups": 2,
+            "profile.managed_default_content_settings.geolocation": 2,
+            "profile.managed_default_content_settings.media_stream": 2,
+        }
+        chrome_options.add_experimental_option("prefs", prefs)
         
         # User agent
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -64,7 +86,8 @@ class PortalBot:
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
         
         # Inicializar Chrome com Selenium Manager
-        logger.info("Inicializando Chrome (modo estável para 512MB RAM)...")
+        logger.info("Inicializando Chrome (MODO EXTREMO - 512MB)...")
+        logger.info("⚠️ Imagens desabilitadas para economizar memória")
         self.driver = webdriver.Chrome(options=chrome_options)
         
         # Remover detecção de webdriver
@@ -435,10 +458,20 @@ class PortalBot:
     def limpar_cache(self):
         """Limpa cache do Chrome para economizar memória"""
         try:
-            logger.info("Limpando cache do navegador...")
+            logger.info("🧹 Limpando cache do navegador...")
             self.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
             self.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
-            logger.info("Cache limpo!")
+            
+            # Monitorar memória (se psutil estiver disponível)
+            try:
+                import psutil
+                processo = psutil.Process()
+                memoria_mb = processo.memory_info().rss / 1024 / 1024
+                logger.info(f"💾 Memória em uso: {memoria_mb:.0f}MB")
+            except:
+                pass
+            
+            logger.info("✅ Cache limpo!")
         except Exception as e:
             logger.warning(f"Não foi possível limpar cache: {e}")
     
@@ -562,7 +595,7 @@ async def escolher_disciplina(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         await update.message.reply_text(f"📚 Encontradas {total_cw} atividades CW!\n\n🚀 Iniciando processamento...")
         
-        # Processar cada atividade
+        # Processar cada atividade COM REINÍCIO DO CHROME A CADA 2 ATIVIDADES
         for i in range(total_cw):
             percentage = ((i+1) / total_cw) * 100
             await update.message.reply_text(
@@ -579,10 +612,55 @@ async def escolher_disciplina(update: Update, context: ContextTypes.DEFAULT_TYPE
                     bot_selenium.voltar_para_disciplina()
                     bot_selenium.configurar_filtros_conteudo_web()
                     
-                    # LIMPAR CACHE APÓS CADA ATIVIDADE PARA ECONOMIZAR MEMÓRIA
+                    # LIMPAR CACHE APÓS CADA ATIVIDADE
                     bot_selenium.limpar_cache()
                     
                     await update.message.reply_text(f"✅ {atividade['titulo']} concluída!")
+                    
+                    # REINICIAR CHROME A CADA 2 ATIVIDADES PARA LIBERAR MEMÓRIA
+                    if (i + 1) % 2 == 0 and (i + 1) < total_cw:
+                        await update.message.reply_text("🔄 Reiniciando Chrome para economizar memória...")
+                        
+                        # Salvar informações necessárias
+                        disciplina_url = bot_selenium.driver.current_url
+                        
+                        # Fechar Chrome
+                        bot_selenium.fechar()
+                        await update.message.reply_text("✅ Chrome fechado. Liberando memória...")
+                        
+                        # Aguardar um pouco
+                        import asyncio
+                        await asyncio.sleep(3)
+                        
+                        # Reabrir Chrome
+                        await update.message.reply_text("🔧 Reabrindo Chrome...")
+                        bot_selenium = PortalBot()
+                        
+                        # Fazer login novamente
+                        await update.message.reply_text("🔐 Fazendo login...")
+                        if not bot_selenium.fazer_login():
+                            await update.message.reply_text("❌ Erro no login após reiniciar!")
+                            return ConversationHandler.END
+                        
+                        # Acessar curso
+                        await update.message.reply_text("🌾 Acessando Agronomia...")
+                        if not bot_selenium.entrar_curso_agronomia():
+                            await update.message.reply_text("❌ Erro ao acessar curso!")
+                            bot_selenium.fechar()
+                            return ConversationHandler.END
+                        
+                        # Acessar disciplina
+                        await update.message.reply_text(f"📚 Reacessando disciplina...")
+                        disciplinas_cache_novo = bot_selenium.listar_disciplinas()
+                        disciplina_atual = next((d for d in disciplinas_cache_novo if d['nome'] == disciplina['nome']), None)
+                        
+                        if disciplina_atual and bot_selenium.acessar_disciplina(disciplina_atual):
+                            bot_selenium.configurar_filtros_conteudo_web()
+                            await update.message.reply_text("✅ Chrome reiniciado! Continuando...")
+                        else:
+                            await update.message.reply_text("❌ Erro ao reacessar disciplina!")
+                            bot_selenium.fechar()
+                            return ConversationHandler.END
         
         await update.message.reply_text(f"🎉 <b>Todas as {total_cw} atividades concluídas!</b>", parse_mode='HTML')
         
