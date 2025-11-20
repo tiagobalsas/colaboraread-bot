@@ -8,7 +8,6 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
 from dotenv import load_dotenv
@@ -40,26 +39,30 @@ class PortalBot:
         self.username = os.getenv('PORTAL_USERNAME')
         self.password = os.getenv('PORTAL_PASSWORD')
         
-        # Configurar Chrome para Render
+        # Configurar Chrome para Docker/Render
         chrome_options = Options()
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--disable-software-rasterizer')
+        chrome_options.add_argument('--disable-extensions')
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
         
-        service = Service('/usr/local/bin/chromedriver')
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        # MUDANÇA IMPORTANTE: Não especificar service, deixar Selenium Manager gerenciar
+        # O Selenium 4.15+ tem Selenium Manager que baixa ChromeDriver automaticamente
+        logger.info("Inicializando Chrome com Selenium Manager...")
+        self.driver = webdriver.Chrome(options=chrome_options)
         
         self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
             'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
         })
         
         self.wait = WebDriverWait(self.driver, 10)
-        logger.info("Bot Selenium inicializado")
+        logger.info("Bot Selenium inicializado com sucesso!")
     
     def fazer_login(self):
         try:
@@ -211,45 +214,67 @@ class PortalBot:
                 details = self.driver.find_element(By.ID, "detalhe")
                 if 'open' not in details.get_attribute('outerHTML'):
                     summary.click()
-                    time.sleep(0.5)
+                    time.sleep(1)
             except:
                 pass
             
             secoes = self.driver.find_elements(By.CSS_SELECTOR, "details#detalhe a[target='_blank']")
-            secoes_list = [{'nome': s.text.strip(), 'elemento': s} for s in secoes if s.text.strip()]
             
-            if not secoes_list:
-                return False
+            if not secoes:
+                logger.info("Nenhuma seção encontrada")
+                return True
             
-            guia_principal = self.driver.current_window_handle
+            janela_principal = self.driver.current_window_handle
             
-            for i, secao in enumerate(secoes_list, 1):
+            for idx, secao in enumerate(secoes, 1):
                 try:
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", secao['elemento'])
-                    time.sleep(0.5)
-                    self.driver.execute_script("window.open(arguments[0].href, '_blank');", secao['elemento'])
+                    titulo = secao.text.strip()
+                    logger.info(f"Processando seção {idx}/{len(secoes)}: {titulo}")
+                    
+                    secao.click()
                     time.sleep(2)
                     
-                    todas_guias = self.driver.window_handles
-                    if len(todas_guias) > 1:
-                        nova_guia = [g for g in todas_guias if g != guia_principal][0]
-                        self.driver.switch_to.window(nova_guia)
-                        time.sleep(3)
+                    janelas = self.driver.window_handles
+                    if len(janelas) > 1:
+                        nova_janela = [j for j in janelas if j != janela_principal][0]
+                        self.driver.switch_to.window(nova_janela)
                         
-                        # Rolar página
-                        for _ in range(5):
-                            self.driver.execute_script("window.scrollBy(0, 500);")
-                            time.sleep(1)
+                        self.rolar_pagina_automaticamente()
                         
                         self.driver.close()
-                        self.driver.switch_to.window(guia_principal)
+                        self.driver.switch_to.window(janela_principal)
                         time.sleep(1)
-                except:
+                    
+                except Exception as e:
+                    logger.error(f"Erro na seção {idx}: {e}")
                     try:
-                        self.driver.switch_to.window(guia_principal)
+                        self.driver.switch_to.window(janela_principal)
                     except:
                         pass
+                    continue
             
+            return True
+        except Exception as e:
+            logger.error(f"Erro geral: {e}")
+            return False
+    
+    def rolar_pagina_automaticamente(self):
+        try:
+            time.sleep(2)
+            ultima_altura = self.driver.execute_script("return document.body.scrollHeight")
+            
+            while True:
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
+                
+                nova_altura = self.driver.execute_script("return document.body.scrollHeight")
+                
+                if nova_altura == ultima_altura:
+                    break
+                
+                ultima_altura = nova_altura
+            
+            time.sleep(2)
             return True
         except:
             return False
@@ -330,6 +355,7 @@ async def iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ESCOLHER_DISCIPLINA
         
     except Exception as e:
+        logger.error(f"Erro no /iniciar: {e}")
         await update.message.reply_text(f"❌ Erro: {str(e)}")
         return ConversationHandler.END
 
@@ -402,6 +428,7 @@ async def escolher_disciplina(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Digite apenas números!")
         return ESCOLHER_DISCIPLINA
     except Exception as e:
+        logger.error(f"Erro ao processar disciplina: {e}")
         await update.message.reply_text(f"❌ Erro: {str(e)}")
         return ConversationHandler.END
 
@@ -442,6 +469,10 @@ def main():
     """Inicia o bot"""
     token = os.getenv('TELEGRAM_TOKEN')
     
+    if not token:
+        logger.error("TELEGRAM_TOKEN não encontrado nas variáveis de ambiente!")
+        return
+    
     application = Application.builder().token(token).build()
     
     # Conversation handler para escolha de disciplina
@@ -458,8 +489,9 @@ def main():
     application.add_handler(CommandHandler("ajuda", ajuda))
     application.add_handler(CommandHandler("status", status))
     
-    logger.info("Bot iniciado!")
-    application.run_polling()
+    logger.info("🤖 Bot ColaboraRead iniciado com Docker!")
+    logger.info("📡 Aguardando comandos do Telegram...")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
