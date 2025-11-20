@@ -39,24 +39,40 @@ class PortalBot:
         self.username = os.getenv('PORTAL_USERNAME')
         self.password = os.getenv('PORTAL_PASSWORD')
         
-        # Configurar Chrome para Docker/Render
+        # Configurar Chrome para Docker/Render - OTIMIZADO PARA MEMÓRIA
         chrome_options = Options()
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        
+        # OTIMIZAÇÕES DE MEMÓRIA
         chrome_options.add_argument('--disable-software-rasterizer')
         chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-logging')
+        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+        chrome_options.add_argument('--single-process')  # ← CRÍTICO: Usa apenas 1 processo
+        chrome_options.add_argument('--disable-dev-tools')
+        chrome_options.add_argument('--no-zygote')  # ← CRÍTICO: Economiza ~150MB
+        chrome_options.add_argument('--disk-cache-size=1')
+        chrome_options.add_argument('--media-cache-size=1')
+        chrome_options.add_argument('--disable-background-networking')
+        chrome_options.add_argument('--disable-default-apps')
+        chrome_options.add_argument('--disable-sync')
+        chrome_options.add_argument('--metrics-recording-only')
+        chrome_options.add_argument('--mute-audio')
+        
+        # User agent
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
         
-        # MUDANÇA IMPORTANTE: Não especificar service, deixar Selenium Manager gerenciar
-        # O Selenium 4.15+ tem Selenium Manager que baixa ChromeDriver automaticamente
-        logger.info("Inicializando Chrome com Selenium Manager...")
+        # Inicializar Chrome com Selenium Manager
+        logger.info("Inicializando Chrome com Selenium Manager (modo economia de memória)...")
         self.driver = webdriver.Chrome(options=chrome_options)
         
+        # Remover detecção de webdriver
         self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
             'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
         })
@@ -88,7 +104,7 @@ class PortalBot:
             return False
     
     def entrar_curso_agronomia(self):
-        """Acessa o curso de Agronomia - VERSÃO CORRIGIDA"""
+        """Acessa o curso de Agronomia - VERSÃO OTIMIZADA"""
         try:
             logger.info("="*60)
             logger.info("Tentando acessar curso de Agronomia...")
@@ -106,7 +122,7 @@ class PortalBot:
                     cookie_button.click()
                     time.sleep(1)
             except Exception as e:
-                logger.info(f"Banner de cookies não encontrado ou já fechado: {e}")
+                logger.info(f"Banner de cookies não encontrado ou já fechado")
             
             # 3. ENCONTRAR O BOTÃO "ENTRAR"
             logger.info("Procurando botão Entrar...")
@@ -331,8 +347,23 @@ class PortalBot:
         except:
             return False
     
+    def limpar_cache(self):
+        """Limpa cache do Chrome para economizar memória"""
+        try:
+            logger.info("Limpando cache do navegador...")
+            self.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
+            self.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
+            logger.info("Cache limpo!")
+        except Exception as e:
+            logger.warning(f"Não foi possível limpar cache: {e}")
+    
     def fechar(self):
-        self.driver.quit()
+        try:
+            logger.info("Fechando Chrome e liberando memória...")
+            self.driver.quit()
+            logger.info("Chrome fechado!")
+        except Exception as e:
+            logger.error(f"Erro ao fechar Chrome: {e}")
 
 # ============================================================================
 # COMANDOS DO BOT TELEGRAM
@@ -361,11 +392,13 @@ async def iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔐 Fazendo login...")
         if not bot_selenium.fazer_login():
             await update.message.reply_text("❌ Erro no login!")
+            bot_selenium.fechar()
             return ConversationHandler.END
         
         await update.message.reply_text("✅ Login OK!\n🌾 Acessando Agronomia...")
         if not bot_selenium.entrar_curso_agronomia():
             await update.message.reply_text("❌ Erro ao acessar curso!")
+            bot_selenium.fechar()
             return ConversationHandler.END
         
         await update.message.reply_text("📚 Listando disciplinas...")
@@ -373,6 +406,7 @@ async def iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not disciplinas_cache:
             await update.message.reply_text("❌ Nenhuma disciplina encontrada!")
+            bot_selenium.fechar()
             return ConversationHandler.END
         
         # Criar teclado com disciplinas
@@ -393,6 +427,8 @@ async def iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Erro no /iniciar: {e}")
         await update.message.reply_text(f"❌ Erro: {str(e)}")
+        if bot_selenium:
+            bot_selenium.fechar()
         return ConversationHandler.END
 
 async def escolher_disciplina(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -403,6 +439,8 @@ async def escolher_disciplina(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if escolha == "❌ Cancelar":
         await update.message.reply_text("❌ Operação cancelada!", reply_markup=ReplyKeyboardRemove())
+        if bot_selenium:
+            bot_selenium.fechar()
         return ConversationHandler.END
     
     try:
@@ -422,16 +460,19 @@ async def escolher_disciplina(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Processar disciplina
         if not bot_selenium.acessar_disciplina(disciplina):
             await update.message.reply_text("❌ Erro ao acessar disciplina!")
+            bot_selenium.fechar()
             return ConversationHandler.END
         
         if not bot_selenium.configurar_filtros_conteudo_web():
             await update.message.reply_text("❌ Erro ao configurar filtros!")
+            bot_selenium.fechar()
             return ConversationHandler.END
         
         total_cw = bot_selenium.contar_atividades_cw()
         
         if total_cw == 0:
             await update.message.reply_text("⚠️ Nenhuma atividade CW encontrada!")
+            bot_selenium.fechar()
             return ConversationHandler.END
         
         await update.message.reply_text(f"📚 Encontradas {total_cw} atividades CW!\n\n🚀 Iniciando processamento...")
@@ -453,11 +494,17 @@ async def escolher_disciplina(update: Update, context: ContextTypes.DEFAULT_TYPE
                     bot_selenium.voltar_para_disciplina()
                     bot_selenium.configurar_filtros_conteudo_web()
                     
+                    # LIMPAR CACHE APÓS CADA ATIVIDADE PARA ECONOMIZAR MEMÓRIA
+                    bot_selenium.limpar_cache()
+                    
                     await update.message.reply_text(f"✅ {atividade['titulo']} concluída!")
         
         await update.message.reply_text(f"🎉 <b>Todas as {total_cw} atividades concluídas!</b>", parse_mode='HTML')
         
+        # FECHAR DRIVER PARA LIBERAR MEMÓRIA
         bot_selenium.fechar()
+        bot_selenium = None
+        
         return ConversationHandler.END
         
     except ValueError:
@@ -466,11 +513,17 @@ async def escolher_disciplina(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"Erro ao processar disciplina: {e}")
         await update.message.reply_text(f"❌ Erro: {str(e)}")
+        if bot_selenium:
+            bot_selenium.fechar()
         return ConversationHandler.END
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancela a operação"""
+    global bot_selenium
     await update.message.reply_text("❌ Operação cancelada!", reply_markup=ReplyKeyboardRemove())
+    if bot_selenium:
+        bot_selenium.fechar()
+        bot_selenium = None
     return ConversationHandler.END
 
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -487,14 +540,15 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Listar disciplinas\n"
         "✅ Processar atividades CW\n"
         "✅ Rolar todas as seções\n"
-        "✅ Notificar o progresso",
+        "✅ Notificar o progresso\n\n"
+        "<b>Otimizado para economia de memória!</b>",
         parse_mode='HTML'
     )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /status"""
     global bot_selenium
-    status_text = "✅ Bot online!" if bot_selenium is None else "⚙️ Bot processando..."
+    status_text = "✅ Bot online e pronto!" if bot_selenium is None else "⚙️ Bot processando atividades..."
     await update.message.reply_text(f"📊 Status: {status_text}")
 
 # ============================================================================
@@ -526,6 +580,7 @@ def main():
     application.add_handler(CommandHandler("status", status))
     
     logger.info("🤖 Bot ColaboraRead iniciado com Docker!")
+    logger.info("💾 Modo economia de memória ativado!")
     logger.info("📡 Aguardando comandos do Telegram...")
     application.run_polling(drop_pending_updates=True)
 
