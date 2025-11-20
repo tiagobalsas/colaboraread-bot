@@ -255,75 +255,99 @@ class PortalBot:
     
     def processar_todas_secoes(self):
         try:
+            logger.info("🔍 Procurando seções para processar...")
             time.sleep(1)
             try:
                 summary = self.driver.find_element(By.CSS_SELECTOR, "details#detalhe summary")
                 details = self.driver.find_element(By.ID, "detalhe")
                 if 'open' not in details.get_attribute('outerHTML'):
+                    logger.info("Expandindo detalhes da atividade...")
                     summary.click()
                     time.sleep(1)
             except:
+                logger.info("Detalhes já expandidos ou não encontrados")
                 pass
             
             secoes = self.driver.find_elements(By.CSS_SELECTOR, "details#detalhe a[target='_blank']")
             
             if not secoes:
-                logger.info("Nenhuma seção encontrada")
+                logger.info("⚠️ Nenhuma seção encontrada nesta atividade")
                 return True
             
+            logger.info(f"📚 Total de {len(secoes)} seção(ões) encontrada(s)")
             janela_principal = self.driver.current_window_handle
             
             for idx, secao in enumerate(secoes, 1):
                 try:
                     titulo = secao.text.strip()
-                    logger.info(f"Processando seção {idx}/{len(secoes)}: {titulo}")
+                    logger.info(f"📖 Processando seção {idx}/{len(secoes)}: {titulo}")
                     
                     secao.click()
                     time.sleep(2)
                     
                     janelas = self.driver.window_handles
+                    logger.info(f"Total de janelas abertas: {len(janelas)}")
+                    
                     if len(janelas) > 1:
                         nova_janela = [j for j in janelas if j != janela_principal][0]
                         self.driver.switch_to.window(nova_janela)
+                        logger.info(f"Mudou para nova janela: {self.driver.current_url[:50]}...")
                         
                         self.rolar_pagina_automaticamente()
                         
+                        logger.info("Fechando janela da seção...")
                         self.driver.close()
                         self.driver.switch_to.window(janela_principal)
+                        logger.info(f"✅ Seção {idx} concluída!")
                         time.sleep(1)
+                    else:
+                        logger.warning(f"⚠️ Nova janela não abriu para seção {idx}")
                     
                 except Exception as e:
-                    logger.error(f"Erro na seção {idx}: {e}")
+                    logger.error(f"❌ Erro na seção {idx}: {e}")
                     try:
                         self.driver.switch_to.window(janela_principal)
                     except:
                         pass
                     continue
             
+            logger.info(f"🎉 Todas as {len(secoes)} seções foram processadas!")
             return True
         except Exception as e:
-            logger.error(f"Erro geral: {e}")
+            logger.error(f"❌ Erro geral ao processar seções: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def rolar_pagina_automaticamente(self):
         try:
+            logger.info("Iniciando rolagem da página...")
             time.sleep(2)
             ultima_altura = self.driver.execute_script("return document.body.scrollHeight")
+            tentativas = 0
+            max_tentativas = 20  # Máximo 20 rolagens (~30 segundos)
             
-            while True:
+            while tentativas < max_tentativas:
                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                 time.sleep(1.5)
+                tentativas += 1
                 
                 nova_altura = self.driver.execute_script("return document.body.scrollHeight")
+                logger.info(f"Rolagem {tentativas}/{max_tentativas} - Altura: {nova_altura}px")
                 
                 if nova_altura == ultima_altura:
+                    logger.info("✅ Página totalmente carregada!")
                     break
                 
                 ultima_altura = nova_altura
             
+            if tentativas >= max_tentativas:
+                logger.warning(f"⚠️ Timeout: Rolou {max_tentativas}x mas página continua crescendo")
+            
             time.sleep(2)
             return True
-        except:
+        except Exception as e:
+            logger.error(f"Erro ao rolar página: {e}")
             return False
     
     def voltar_para_disciplina(self):
