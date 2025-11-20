@@ -87,17 +87,116 @@ class PortalBot:
             logger.error(f"Erro no login: {e}")
             return False
     
-    def entrar_curso_agronomia(self):
+def entrar_curso_agronomia(self):
+    """Acessa o curso de Agronomia com debug detalhado"""
+    try:
+        logger.info("="*60)
+        logger.info("DEBUG: Iniciando acesso ao curso")
+        logger.info("="*60)
+        
+        # 1. Aguardar mais tempo para garantir carregamento
+        logger.info("Aguardando 10 segundos após login...")
+        time.sleep(10)
+        
+        # 2. URL atual
+        logger.info(f"URL atual: {self.driver.current_url}")
+        
+        # 3. Listar TODOS os botões
+        logger.info("Listando botões da página...")
         try:
-            entrar_button = self.wait.until(
+            all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            logger.info(f"Total de botões: {len(all_buttons)}")
+            
+            for idx, btn in enumerate(all_buttons[:20]):  # Limitar a 20 para não lotar o log
+                try:
+                    text = btn.text.strip()
+                    classes = btn.get_attribute("class")
+                    visible = btn.is_displayed()
+                    logger.info(f"Botão {idx}: '{text}' | classes: '{classes}' | visível: {visible}")
+                except Exception as e:
+                    logger.info(f"Botão {idx}: erro ao ler - {e}")
+        except Exception as e:
+            logger.error(f"Erro ao listar botões: {e}")
+        
+        # 4. Testar múltiplas estratégias
+        logger.info("\n=== TESTANDO ESTRATÉGIAS ===")
+        
+        # Estratégia 1: Seletor original
+        logger.info("Tentativa 1: button.btn.btn-primary.entrar")
+        try:
+            entrar_button = WebDriverWait(self.driver, 5).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "button.btn.btn-primary.entrar"))
             )
+            logger.info("✅ Estratégia 1 SUCESSO!")
             entrar_button.click()
             time.sleep(3)
+            logger.info(f"Curso acessado! Nova URL: {self.driver.current_url}")
             return True
         except Exception as e:
-            logger.error(f"Erro: {e}")
-            return False
+            logger.warning(f"❌ Estratégia 1 falhou: {e}")
+        
+        # Estratégia 2: XPath por texto
+        logger.info("Tentativa 2: XPath com texto 'Entrar'")
+        try:
+            entrar_button = self.driver.find_element(By.XPATH, "//button[contains(text(), 'Entrar')]")
+            logger.info("✅ Estratégia 2 SUCESSO!")
+            entrar_button.click()
+            time.sleep(3)
+            logger.info(f"Curso acessado! Nova URL: {self.driver.current_url}")
+            return True
+        except Exception as e:
+            logger.warning(f"❌ Estratégia 2 falhou: {e}")
+        
+        # Estratégia 3: Apenas classe .entrar
+        logger.info("Tentativa 3: button.entrar")
+        try:
+            entrar_button = self.driver.find_element(By.CSS_SELECTOR, "button.entrar")
+            logger.info("✅ Estratégia 3 SUCESSO!")
+            entrar_button.click()
+            time.sleep(3)
+            logger.info(f"Curso acessado! Nova URL: {self.driver.current_url}")
+            return True
+        except Exception as e:
+            logger.warning(f"❌ Estratégia 3 falhou: {e}")
+        
+        # Estratégia 4: Link <a> ao invés de button
+        logger.info("Tentativa 4: a.btn.btn-primary.entrar")
+        try:
+            entrar_button = self.driver.find_element(By.CSS_SELECTOR, "a.btn.btn-primary.entrar")
+            logger.info("✅ Estratégia 4 SUCESSO!")
+            entrar_button.click()
+            time.sleep(3)
+            logger.info(f"Curso acessado! Nova URL: {self.driver.current_url}")
+            return True
+        except Exception as e:
+            logger.warning(f"❌ Estratégia 4 falhou: {e}")
+        
+        # Estratégia 5: XPath mais genérico
+        logger.info("Tentativa 5: XPath //button[@class and contains(text(), 'Entrar')]")
+        try:
+            entrar_button = self.driver.find_element(
+                By.XPATH, 
+                "//button[@class and contains(text(), 'Entrar')]"
+            )
+            logger.info("✅ Estratégia 5 SUCESSO!")
+            entrar_button.click()
+            time.sleep(3)
+            logger.info(f"Curso acessado! Nova URL: {self.driver.current_url}")
+            return True
+        except Exception as e:
+            logger.warning(f"❌ Estratégia 5 falhou: {e}")
+        
+        # Se chegou aqui, nada funcionou
+        logger.error("="*60)
+        logger.error("❌ TODAS AS 5 ESTRATÉGIAS FALHARAM!")
+        logger.error("="*60)
+        return False
+        
+    except Exception as e:
+        logger.error(f"Erro crítico em entrar_curso_agronomia: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
     
     def listar_disciplinas(self):
         try:
