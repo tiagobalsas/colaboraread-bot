@@ -38,29 +38,25 @@ class PortalBot:
         self.username = os.getenv('PORTAL_USERNAME')
         self.password = os.getenv('PORTAL_PASSWORD')
         
-        # Configurar Chrome para Docker/Render - OTIMIZADO PARA MEMÓRIA
+        # Configurar Chrome para Docker/Render - ESTÁVEL PARA 512MB
         chrome_options = Options()
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        
-        # OTIMIZAÇÕES DE MEMÓRIA
         chrome_options.add_argument('--disable-software-rasterizer')
         chrome_options.add_argument('--disable-extensions')
         chrome_options.add_argument('--disable-logging')
-        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
-        chrome_options.add_argument('--single-process')  # ← CRÍTICO: Usa apenas 1 processo
-        chrome_options.add_argument('--disable-dev-tools')
-        chrome_options.add_argument('--no-zygote')  # ← CRÍTICO: Economiza ~150MB
-        chrome_options.add_argument('--disk-cache-size=1')
-        chrome_options.add_argument('--media-cache-size=1')
         chrome_options.add_argument('--disable-background-networking')
         chrome_options.add_argument('--disable-default-apps')
         chrome_options.add_argument('--disable-sync')
-        chrome_options.add_argument('--metrics-recording-only')
+        chrome_options.add_argument('--disable-translate')
         chrome_options.add_argument('--mute-audio')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        
+        # Limitar memória
+        chrome_options.add_argument('--max-old-space-size=256')
+        chrome_options.add_argument('--js-flags=--max-old-space-size=256')
         
         # User agent
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -68,7 +64,7 @@ class PortalBot:
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
         
         # Inicializar Chrome com Selenium Manager
-        logger.info("Inicializando Chrome com Selenium Manager (modo economia de memória)...")
+        logger.info("Inicializando Chrome (modo estável para 512MB RAM)...")
         self.driver = webdriver.Chrome(options=chrome_options)
         
         # Remover detecção de webdriver
@@ -578,7 +574,7 @@ def main():
     application.add_handler(CommandHandler("ajuda", ajuda))
     application.add_handler(CommandHandler("status", status))
     
-    logger.info("🤖 Bot ColaboraRead iniciado com Docker!")
+    logger.info("🤖 Bot ColaboraRead iniciado!")
     logger.info("💾 Modo economia de memória ativado!")
     logger.info("📡 Aguardando comandos do Telegram...")
     application.run_polling(drop_pending_updates=True)
