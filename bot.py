@@ -177,30 +177,55 @@ class PortalBot:
     
     def configurar_filtros_conteudo_web(self):
         try:
+            logger.info("⚙️ Configurando filtros de Conteúdo WEB...")
+            
+            # VERIFICAR SE ESTÁ NA TIMELINE
+            if "timeline" not in self.driver.current_url:
+                logger.error(f"❌ Não está na timeline! URL atual: {self.driver.current_url}")
+                return False
+            
             time.sleep(2)
-            marcar_todos = self.driver.find_element(By.ID, "todos")
-            if marcar_todos.is_selected():
-                marcar_todos.click()
-                time.sleep(0.5)
+            
+            # Tentar encontrar checkbox "todos"
+            try:
+                marcar_todos = self.driver.find_element(By.ID, "todos")
+                if marcar_todos.is_selected():
+                    logger.info("Desmarcando 'Marcar todos'...")
+                    marcar_todos.click()
+                    time.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"Checkbox 'todos' não encontrado: {e}")
             
             tipos_elements = self.driver.find_elements(
                 By.CSS_SELECTOR, "input.filters-tipo[data-filter^='tipo-']"
             )
             
+            logger.info(f"Encontrados {len(tipos_elements)} tipos de filtro")
+            
             for elem in tipos_elements:
-                label = elem.find_element(By.XPATH, "./parent::label")
-                nome = label.text.strip().split('\n')[0].strip()
-                
-                if "Conteúdo WEB" in nome or "conteúdo web" in nome.lower():
-                    if not elem.is_selected():
-                        elem.click()
-                        time.sleep(0.3)
-                    break
+                try:
+                    label = elem.find_element(By.XPATH, "./parent::label")
+                    nome = label.text.strip().split('\n')[0].strip()
+                    
+                    if "Conteúdo WEB" in nome or "conteúdo web" in nome.lower():
+                        if not elem.is_selected():
+                            logger.info(f"Marcando filtro: {nome}")
+                            elem.click()
+                            time.sleep(0.3)
+                        else:
+                            logger.info(f"Filtro '{nome}' já marcado")
+                        break
+                except Exception as e:
+                    logger.warning(f"Erro ao processar filtro: {e}")
+                    continue
             
             time.sleep(1)
+            logger.info("✅ Filtros configurados!")
             return True
         except Exception as e:
-            logger.error(f"Erro filtros: {e}")
+            logger.error(f"❌ Erro ao configurar filtros: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def contar_atividades_cw(self):
@@ -296,10 +321,24 @@ class PortalBot:
                         self.rolar_pagina_automaticamente()
                         
                         logger.info("Fechando janela da seção...")
-                        self.driver.close()
-                        self.driver.switch_to.window(janela_principal)
-                        logger.info(f"✅ Seção {idx} concluída!")
-                        time.sleep(1)
+                        try:
+                            self.driver.close()
+                            time.sleep(2)  # Aguardar fechamento completo
+                        except Exception as e:
+                            logger.warning(f"Erro ao fechar janela: {e}")
+                        
+                        # Garantir que voltou para janela principal
+                        try:
+                            self.driver.switch_to.window(janela_principal)
+                            logger.info(f"✅ Seção {idx} concluída!")
+                            time.sleep(2)  # Aguardar estabilização
+                        except Exception as e:
+                            logger.error(f"Erro ao voltar para janela principal: {e}")
+                            # Tentar recuperar voltando para a primeira janela disponível
+                            janelas_disponiveis = self.driver.window_handles
+                            if janelas_disponiveis:
+                                self.driver.switch_to.window(janelas_disponiveis[0])
+                                logger.info("Recuperado: voltou para primeira janela disponível")
                     else:
                         logger.warning(f"⚠️ Nova janela não abriu para seção {idx}")
                     
@@ -352,18 +391,45 @@ class PortalBot:
     
     def voltar_para_disciplina(self):
         try:
+            logger.info("🔙 Voltando para a página da disciplina...")
+            
+            # Verificar se já está na timeline
             if "timeline" in self.driver.current_url:
+                logger.info("✅ Já está na timeline!")
                 return True
+            
+            # Tentar usar breadcrumb
             try:
+                logger.info("Tentando usar breadcrumb...")
                 breadcrumb = self.driver.find_element(By.CSS_SELECTOR, ".breadcrumb li:nth-last-child(2) a")
                 breadcrumb.click()
-                time.sleep(2)
+                time.sleep(3)
+                logger.info(f"URL após breadcrumb: {self.driver.current_url}")
                 return True
-            except:
+            except Exception as e:
+                logger.warning(f"Breadcrumb não funcionou: {e}")
+            
+            # Tentar voltar usando navegador
+            try:
+                logger.info("Tentando voltar usando botão Back...")
                 self.driver.back()
-                time.sleep(2)
-                return True
-        except:
+                time.sleep(3)
+                logger.info(f"URL após back: {self.driver.current_url}")
+                
+                # Verificar se voltou para timeline
+                if "timeline" in self.driver.current_url:
+                    return True
+                else:
+                    # Se não voltou, tentar mais uma vez
+                    logger.warning("Não voltou para timeline, tentando novamente...")
+                    self.driver.back()
+                    time.sleep(3)
+                    return True
+            except Exception as e:
+                logger.error(f"Erro ao voltar: {e}")
+                return False
+        except Exception as e:
+            logger.error(f"Erro geral ao voltar: {e}")
             return False
     
     def limpar_cache(self):
