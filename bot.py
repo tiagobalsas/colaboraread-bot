@@ -2,146 +2,273 @@ import os
 import time
 import logging
 from datetime import datetime
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from dotenv import load_dotenv
 
-# Variáveis de ambiente vêm do Render diretamente
-# (não precisa de .env em produção)
+load_dotenv()
 
-# Configurar logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Estados da conversa
-ESCOLHER_DISCIPLINA = 1
-
-# Variável global para armazenar o bot Selenium
-bot_selenium = None
-disciplinas_cache = []
-
-# ============================================================================
-# CLASSE BOT SELENIUM
-# ============================================================================
 
 class PortalBot:
-    def __init__(self):
+    """Bot para automação do portal ColaboraRead"""
+    
+    def __init__(self, headless=False):
+        """
+        Inicializa o bot
+        
+        Args:
+            headless (bool): Se True, executa sem abrir janela do navegador
+        """
         self.url_login = "https://www.colaboraread.com.br/login/auth"
         self.username = os.getenv('PORTAL_USERNAME')
         self.password = os.getenv('PORTAL_PASSWORD')
         
-        # Configurar Chrome para Railway - VERSÃO ESTÁVEL
-        chrome_options = Options()
-        chrome_options.add_argument('--headless=new')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--disable-software-rasterizer')
-        chrome_options.add_argument('--disable-extensions')
-        chrome_options.add_argument('--disable-logging')
-        chrome_options.add_argument('--disable-background-networking')
-        chrome_options.add_argument('--disable-default-apps')
-        chrome_options.add_argument('--disable-sync')
-        chrome_options.add_argument('--disable-translate')
-        chrome_options.add_argument('--mute-audio')
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        # Configurar sistema de logs
+        self._configurar_logs()
         
-        # User agent
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        # Validar credenciais
+        if not self.username or not self.password:
+            raise ValueError(
+                "Credenciais não encontradas! Configure as variáveis de ambiente:\n"
+                "PORTAL_USERNAME e PORTAL_PASSWORD"
+            )
         
-        # Inicializar Chrome com Selenium Manager
-        logger.info("Inicializando Chrome (modo estável)...")
-        self.driver = webdriver.Chrome(options=chrome_options)
+        # Configurar opções do Edge
+        edge_options = Options()
+        if headless:
+            edge_options.add_argument('--headless')
+        edge_options.add_argument('--no-sandbox')
+        edge_options.add_argument('--disable-dev-shm-usage')
         
-        # Remover detecção de webdriver
-        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-            'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
-        })
+        # Inicializar driver
+        self.driver = webdriver.Edge(options=edge_options)
+        self.wait = WebDriverWait(self.driver, 10)  # Reduzido de 15 para 10 segundos
         
-        self.wait = WebDriverWait(self.driver, 10)
-        logger.info("Bot Selenium inicializado com sucesso!")
+        # NOVO: Rastreamento de progresso (Baby Step 2)
+        self.disciplina_atual = None
+        self.atividade_atual_index = 0
+        self.total_atividades = 0
+        
+        self.logger.info("Bot inicializado com sucesso!")
+        print("✓ Bot inicializado com sucesso!")
+    
+    def _configurar_logs(self):
+        """Configura o sistema de logging"""
+        # Criar pasta de logs se não existir
+        if not os.path.exists('logs'):
+            os.makedirs('logs')
+        
+        # Nome do arquivo com timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"logs/bot_portal_{timestamp}.log"
+        
+        # Configurar logging
+        self.logger = logging.getLogger('PortalBot')
+        self.logger.setLevel(logging.INFO)
+        
+        # Formato dos logs
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        
+        # Handler para arquivo
+        file_handler = logging.FileHandler(log_filename, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        
+        # Handler para console
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(console_handler)
+        
+        self.log_filename = log_filename
+    
+    def verificar_sessao_valida(self):
+        """Verifica se a sessão ainda é válida e tenta recuperar se necessário"""
+        try:
+            current_url = self.driver.current_url
+            # Se está na página de login, a sessão expirou
+            if "login" in current_url.lower():
+                self.logger.warning("Sessão expirada - detectado redirecionamento para login")
+                return False
+            self.logger.info(f"Sessão válida - URL atual: {current_url}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Sessão invalidada: {e}")
+            return False
+
+    def recuperar_sessao(self):
+        """Tenta recuperar a sessão e retomar de onde parou"""
+        try:
+            self.logger.info("Tentando recuperar sessão...")
+            print("\n🔄 Tentando recuperar sessão...")
+            
+            # Fechar driver atual se ainda existir
+            try:
+                self.driver.quit()
+            except:
+                pass
+            
+            # Reinicializar driver
+            edge_options = Options()
+            edge_options.add_argument('--no-sandbox')
+            edge_options.add_argument('--disable-dev-shm-usage')
+            self.driver = webdriver.Edge(options=edge_options)
+            self.wait = WebDriverWait(self.driver, 10)
+            
+            # Refazer login
+            if self.fazer_login():
+                # Tentar voltar para o curso
+                if self.entrar_curso_agronomia():
+                    self.logger.info("Sessão recuperada com sucesso!")
+                    print("✅ Sessão recuperada com sucesso!")
+                    
+                    # NOVO: Informar sobre progresso se tivermos
+                    if self.disciplina_atual:
+                        print(f"📊 Último progresso: {self.disciplina_atual} - Atividade {self.atividade_atual_index + 1}/{self.total_atividades}")
+                        print("💡 Dica: Reinicie o bot para recomeçar da disciplina")
+                    
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao recuperar sessão: {e}")
+            return False
+
+    def salvar_progresso(self):
+        """Salva o progresso atual para recuperação em caso de falha"""
+        progresso = {
+            'disciplina': self.disciplina_atual,
+            'atividade_index': self.atividade_atual_index,
+            'total_atividades': self.total_atividades,
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        self.logger.info(f"Progresso salvo: {progresso}")
+        print(f"📊 Progresso salvo: Atividade {self.atividade_atual_index + 1}/{self.total_atividades}")
+        return progresso
+    
+    def salvar_html_pagina(self, nome_arquivo=None):
+        """Salva o HTML da página atual para debug"""
+        if nome_arquivo is None:
+            timestamp = datetime.now().strftime("%H%M%S")
+            nome_arquivo = f"debug_page_{timestamp}.html"
+        
+        html_content = self.driver.page_source
+        with open(f"logs/{nome_arquivo}", "w", encoding="utf-8") as f:
+            f.write(html_content)
+        
+        self.logger.info(f"HTML salvo em: logs/{nome_arquivo}")
+        return nome_arquivo
     
     def fazer_login(self):
+        """Realiza o login no portal"""
         try:
-            logger.info("Fazendo login...")
+            self.logger.info(f"Acessando {self.url_login}")
+            print(f"\n→ Acessando {self.url_login}")
             self.driver.get(self.url_login)
-            time.sleep(5)
             
-            username_field = self.wait.until(EC.presence_of_element_located((By.ID, "username")))
+            # Aguardar e preencher campo de usuário
+            self.logger.info("Preenchendo credenciais...")
+            print("→ Preenchendo credenciais...")
+            username_field = self.wait.until(
+                EC.presence_of_element_located((By.ID, "username"))
+            )
+            username_field.clear()
             username_field.send_keys(self.username)
             
+            # Preencher campo de senha
             password_field = self.driver.find_element(By.ID, "password")
+            password_field.clear()
             password_field.send_keys(self.password)
-            password_field.send_keys(Keys.RETURN)
             
-            time.sleep(7)
+            # Clicar no botão de login
+            self.logger.info("Efetuando login...")
+            print("→ Efetuando login...")
+            login_button = self.driver.find_element(
+                By.CSS_SELECTOR, 
+                "button.btn.btn-primary.btn-lg.btn-block"
+            )
+            login_button.click()
             
+            # Aguardar redirecionamento (reduzido de 3s para 2s)
+            time.sleep(2)
+            
+            # Verificar se o login foi bem-sucedido
             if "login" not in self.driver.current_url.lower():
-                logger.info("Login realizado!")
+                self.logger.info("Login realizado com sucesso!")
+                print("✓ Login realizado com sucesso!")
                 return True
+            else:
+                self.logger.error("Falha no login - verifique as credenciais")
+                print("✗ Falha no login - verifique as credenciais")
+                return False
+                
+        except TimeoutException:
+            self.logger.error("Timeout: Página demorou muito para carregar")
+            print("✗ Timeout: Página demorou muito para carregar")
+            return False
+        except NoSuchElementException as e:
+            self.logger.error(f"Elemento não encontrado: {e}")
+            print(f"✗ Elemento não encontrado: {e}")
             return False
         except Exception as e:
-            logger.error(f"Erro no login: {e}")
+            self.logger.error(f"Erro inesperado no login: {e}")
+            print(f"✗ Erro inesperado: {e}")
             return False
     
+    def obter_titulo_pagina(self):
+        """Retorna o título da página atual"""
+        return self.driver.title
+    
+    def tirar_screenshot(self, nome_arquivo="screenshot.png"):
+        """Salva um screenshot da página atual"""
+        self.driver.save_screenshot(nome_arquivo)
+        self.logger.info(f"Screenshot salvo: {nome_arquivo}")
+        print(f"✓ Screenshot salvo: {nome_arquivo}")
+    
     def entrar_curso_agronomia(self):
-        """Acessa o curso de Agronomia"""
+        """Acessa o curso de Agronomia - Bacharelado"""
         try:
-            logger.info("="*60)
-            logger.info("Tentando acessar curso de Agronomia...")
-            logger.info("="*60)
+            self.logger.info("Procurando curso de Agronomia...")
+            print("\n→ Procurando curso de Agronomia...")
             
-            time.sleep(5)
-            
-            # Fechar banner de cookies
-            try:
-                logger.info("Verificando banner de cookies...")
-                cookie_button = self.driver.find_element(By.CSS_SELECTOR, "button.classBtnCookies")
-                if cookie_button.is_displayed():
-                    logger.info("Fechando banner de cookies...")
-                    cookie_button.click()
-                    time.sleep(1)
-            except:
-                logger.info("Banner de cookies não encontrado")
-            
-            # Encontrar botão Entrar
-            logger.info("Procurando botão Entrar...")
+            # Aguardar o botão "Entrar" aparecer
             entrar_button = self.wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "button.btn.btn-primary.entrar"))
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.btn.btn-primary.entrar"))
             )
-            logger.info("✅ Botão encontrado!")
             
-            # Rolar até o botão
-            logger.info("Rolando até o botão...")
-            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", entrar_button)
-            time.sleep(1)
+            self.logger.info("Clicando em 'Entrar' no curso de Agronomia...")
+            print("→ Clicando em 'Entrar' no curso de Agronomia...")
+            entrar_button.click()
             
-            # Clicar usando JavaScript
-            logger.info("Clicando no botão...")
-            self.driver.execute_script("arguments[0].click();", entrar_button)
-            time.sleep(3)
+            # Aguardar carregamento (reduzido de 3s para 2s)
+            time.sleep(2)
             
-            logger.info(f"✅ Curso acessado! URL: {self.driver.current_url}")
+            self.logger.info(f"Curso acessado! URL atual: {self.driver.current_url}")
+            print(f"✓ Curso acessado! URL atual: {self.driver.current_url}")
             return True
             
+        except TimeoutException:
+            self.logger.error("Timeout: Botão 'Entrar' não encontrado")
+            print("✗ Timeout: Botão 'Entrar' não encontrado")
+            return False
         except Exception as e:
-            logger.error(f"❌ Erro ao acessar curso: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            self.logger.error(f"Erro ao acessar curso: {e}")
+            print(f"✗ Erro ao acessar curso: {e}")
             return False
     
     def listar_disciplinas(self):
+        """Lista todas as disciplinas disponíveis e retorna uma lista com seus dados"""
         try:
+            self.logger.info("Buscando disciplinas disponíveis...")
+            print("\n→ Buscando disciplinas disponíveis...")
+            
+            # Aguardar as disciplinas carregarem
             disciplinas_elements = self.wait.until(
                 EC.presence_of_all_elements_located(
                     (By.CSS_SELECTOR, "a.atividadeNome[href*='/aluno/timeline/index']")
@@ -149,438 +276,682 @@ class PortalBot:
             )
             
             disciplinas = []
+            
             for elemento in disciplinas_elements:
                 nome = elemento.text.strip()
                 url = elemento.get_attribute('href')
+                
+                # Filtrar "Atividades interdisciplinares" se necessário
                 if nome and url:
-                    disciplinas.append({'nome': nome, 'url': url, 'elemento': elemento})
+                    disciplinas.append({
+                        'nome': nome,
+                        'url': url,
+                        'elemento': elemento
+                    })
             
+            self.logger.info(f"Encontradas {len(disciplinas)} disciplinas")
             return disciplinas
+            
+        except TimeoutException:
+            self.logger.error("Timeout: Disciplinas não encontradas")
+            print("✗ Timeout: Disciplinas não encontradas")
+            return []
         except Exception as e:
-            logger.error(f"Erro: {e}")
+            self.logger.error(f"Erro ao listar disciplinas: {e}")
+            print(f"✗ Erro ao listar disciplinas: {e}")
             return []
     
+    def escolher_disciplina(self, disciplinas):
+        """Mostra menu para o usuário escolher uma disciplina"""
+        if not disciplinas:
+            self.logger.error("Nenhuma disciplina encontrada!")
+            print("✗ Nenhuma disciplina encontrada!")
+            return None
+        
+        print("\n" + "="*60)
+        print("DISCIPLINAS DISPONÍVEIS:")
+        print("="*60)
+        
+        for i, disc in enumerate(disciplinas, 1):
+            print(f"{i}. {disc['nome']}")
+        
+        print("="*60)
+        
+        while True:
+            try:
+                escolha = input(f"\nDigite o número da disciplina (1-{len(disciplinas)}) ou 0 para sair: ")
+                escolha = int(escolha)
+                
+                if escolha == 0:
+                    self.logger.info("Operação cancelada pelo usuário")
+                    print("✗ Operação cancelada pelo usuário")
+                    return None
+                
+                if 1 <= escolha <= len(disciplinas):
+                    disciplina_escolhida = disciplinas[escolha - 1]
+                    self.logger.info(f"Disciplina escolhida: {disciplina_escolhida['nome']}")
+                    return disciplina_escolhida
+                else:
+                    print(f"✗ Número inválido! Digite um número entre 1 e {len(disciplinas)}")
+                    
+            except ValueError:
+                print("✗ Por favor, digite apenas números!")
+            except KeyboardInterrupt:
+                self.logger.info("Operação cancelada pelo usuário (KeyboardInterrupt)")
+                print("\n✗ Operação cancelada pelo usuário")
+                return None
+    
     def acessar_disciplina(self, disciplina):
+        """Acessa a disciplina escolhida"""
         try:
+            self.logger.info(f"Acessando disciplina: {disciplina['nome']}")
+            print(f"\n→ Acessando disciplina: {disciplina['nome']}")
+            
             disciplina['elemento'].click()
-            time.sleep(3)
+            
+            # Aguardar carregamento (reduzido de 3s para 2s)
+            time.sleep(2)
+            
+            self.logger.info(f"Disciplina acessada! URL: {self.driver.current_url}")
+            print(f"✓ Disciplina acessada! URL: {self.driver.current_url}")
             return True
+            
         except Exception as e:
-            logger.error(f"Erro: {e}")
+            self.logger.error(f"Erro ao acessar disciplina: {e}")
+            print(f"✗ Erro ao acessar disciplina: {e}")
             return False
     
     def configurar_filtros_conteudo_web(self):
+        """Configura os filtros para mostrar apenas Conteúdo WEB"""
         try:
-            logger.info("⚙️ Configurando filtros...")
-            time.sleep(2)
+            self.logger.info("Configurando filtros para 'Conteúdo WEB'...")
+            print("\n→ Configurando filtros para 'Conteúdo WEB'...")
             
-            try:
-                marcar_todos = self.driver.find_element(By.ID, "todos")
-                if marcar_todos.is_selected():
-                    marcar_todos.click()
-                    time.sleep(0.5)
-            except:
-                pass
+            # Aguardar os filtros carregarem (reduzido de 2s para 1s)
+            time.sleep(1)
             
+            # 1. DESMARCAR TODOS primeiro
+            self.logger.info("Desmarcando todos os tipos de atividade...")
+            print("→ Desmarcando todos os tipos de atividade...")
+            marcar_todos = self.driver.find_element(By.ID, "todos")
+            
+            if marcar_todos.is_selected():
+                marcar_todos.click()
+                time.sleep(0.5)  # Reduzido de 1s para 0.5s
+            
+            # 2. MARCAR apenas "Conteúdo WEB"
+            self.logger.info("Marcando apenas 'Conteúdo WEB'...")
+            print("→ Marcando apenas 'Conteúdo WEB'...")
             tipos_elements = self.driver.find_elements(
-                By.CSS_SELECTOR, "input.filters-tipo[data-filter^='tipo-']"
+                By.CSS_SELECTOR, 
+                "input.filters-tipo[data-filter^='tipo-']"
             )
             
             for elem in tipos_elements:
-                try:
-                    label = elem.find_element(By.XPATH, "./parent::label")
-                    nome = label.text.strip().split('\n')[0].strip()
-                    
-                    if "Conteúdo WEB" in nome or "conteúdo web" in nome.lower():
-                        if not elem.is_selected():
-                            elem.click()
-                            time.sleep(0.3)
-                        break
-                except:
-                    continue
+                label = elem.find_element(By.XPATH, "./parent::label")
+                nome = label.text.strip().split('\n')[0].strip()
+                
+                if "Conteúdo WEB" in nome or "conteúdo web" in nome.lower():
+                    if not elem.is_selected():
+                        elem.click()
+                        self.logger.info(f"Filtro marcado: {nome}")
+                        print(f"  ✓ {nome}")
+                        time.sleep(0.3)  # Reduzido de 0.5s para 0.3s
+                    break
             
-            time.sleep(1)
-            logger.info("✅ Filtros configurados!")
+            self.logger.info("Filtros configurados com sucesso")
+            print("✓ Filtros configurados!")
+            time.sleep(1)  # Reduzido de 2s para 1s (aguardar atualização da página)
+            
             return True
+            
         except Exception as e:
-            logger.error(f"Erro filtros: {e}")
+            self.logger.error(f"Erro ao configurar filtros: {e}")
+            print(f"✗ Erro ao configurar filtros: {e}")
             return False
     
     def contar_atividades_cw(self):
+        """Conta quantas atividades CW existem no total"""
         try:
-            time.sleep(1)
-            atividades = self.driver.find_elements(By.CSS_SELECTOR, "li.atividades[data-show='true']")
+            time.sleep(1)  # Reduzido de 2s para 1s
+            atividades_elements = self.driver.find_elements(
+                By.CSS_SELECTOR, 
+                "li.atividades[data-show='true']"
+            )
+            
             count = 0
-            for elem in atividades:
+            for elem in atividades_elements:
                 if elem.value_of_css_property('display') == 'none':
                     continue
                 try:
-                    titulo = elem.find_element(By.CSS_SELECTOR, ".timeline-title small").text.strip()
+                    titulo_elem = elem.find_element(By.CSS_SELECTOR, ".timeline-title small")
+                    titulo = titulo_elem.text.strip()
                     if titulo.lower().startswith('cw'):
                         count += 1
                 except:
                     continue
+            
+            self.logger.info(f"Total de atividades CW encontradas: {count}")
             return count
-        except:
+        except Exception as e:
+            self.logger.error(f"Erro ao contar atividades CW: {e}")
             return 0
-    
+
     def obter_atividade_cw_por_indice(self, indice):
+        """
+        Obtém a atividade CW pelo índice (0=CW1, 1=CW2, 2=CW3, 3=CW4)
+        
+        Args:
+            indice (int): Índice da atividade (0, 1, 2, 3...)
+        
+        Returns:
+            dict: {'titulo': str, 'elemento': WebElement} ou None
+        """
         try:
-            time.sleep(1)
-            atividades = self.driver.find_elements(By.CSS_SELECTOR, "li.atividades[data-show='true']")
+            time.sleep(1)  # Reduzido de 2s para 1s
+            
+            # Buscar todas as atividades visíveis
+            atividades_elements = self.driver.find_elements(
+                By.CSS_SELECTOR, 
+                "li.atividades[data-show='true']"
+            )
+            
+            self.logger.info(f"Buscando atividade CW índice {indice}. Total de elementos: {len(atividades_elements)}")
+            
             cw_count = 0
             
-            for elem in atividades:
+            for elem in atividades_elements:
+                # Verificar se está visível
                 if elem.value_of_css_property('display') == 'none':
                     continue
+                
                 try:
-                    titulo = elem.find_element(By.CSS_SELECTOR, ".timeline-title small").text.strip()
+                    titulo_elem = elem.find_element(By.CSS_SELECTOR, ".timeline-title small")
+                    titulo = titulo_elem.text.strip()
+                    
+                    # Se é uma atividade CW
                     if titulo.lower().startswith('cw'):
+                        self.logger.info(f"Encontrada atividade CW #{cw_count}: {titulo}")
+                        
+                        # Se é o índice que queremos
                         if cw_count == indice:
-                            return {'titulo': titulo, 'elemento': elem}
+                            self.logger.info(f"Retornando atividade índice {indice}: {titulo}")
+                            return {
+                                'titulo': titulo,
+                                'elemento': elem
+                            }
                         cw_count += 1
-                except:
+                except Exception as e:
+                    self.logger.warning(f"Erro ao processar elemento: {e}")
                     continue
+            
+            self.logger.warning(f"Atividade CW índice {indice} não encontrada. Total CWs encontrados: {cw_count}")
             return None
-        except:
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao obter atividade por índice: {e}")
+            print(f"✗ Erro ao obter atividade por índice: {e}")
             return None
     
     def acessar_atividade(self, atividade):
+        """Acessa a atividade escolhida clicando no botão apropriado"""
         try:
-            botao = atividade['elemento'].find_element(By.CSS_SELECTOR, "a.btn.btn-primary[title*='Atividade']")
+            self.logger.info(f"Acessando atividade: {atividade['titulo']}")
+            print(f"\n→ Acessando atividade: {atividade['titulo']}")
+            
+            # Buscar o botão "Atividade"
+            botao = atividade['elemento'].find_element(
+                By.CSS_SELECTOR, 
+                "a.btn.btn-primary[title*='Atividade']"
+            )
+            
+            # Rolar até o botão
             self.driver.execute_script("arguments[0].scrollIntoView(true);", botao)
-            time.sleep(0.5)
+            time.sleep(0.5)  # Reduzido de 1s para 0.5s
+            
+            # Clicar no botão
             botao.click()
+            
+            # Aguardar carregamento (reduzido de 3s para 2s)
             time.sleep(2)
+            
+            self.logger.info("Atividade acessada com sucesso")
+            print(f"✓ Atividade acessada!")
             return True
-        except:
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao acessar atividade: {e}")
+            print(f"✗ Erro ao acessar atividade: {e}")
             return False
-    
-    def processar_todas_secoes(self):
+
+    def obter_todas_secoes_material_externo(self):
+        """
+        Obtém TODAS as seções do material externo
+        
+        Returns:
+            list: Lista de dicionários com {'nome': str, 'elemento': WebElement}
+        """
         try:
-            logger.info("🔍 Procurando seções...")
+            self.logger.info("Buscando todas as seções do material externo...")
+            
+            # Aguardar carregar (reduzido de 2s para 1s)
             time.sleep(1)
             
+            # Expandir details se necessário
             try:
                 summary = self.driver.find_element(By.CSS_SELECTOR, "details#detalhe summary")
-                details = self.driver.find_element(By.ID, "detalhe")
-                if 'open' not in details.get_attribute('outerHTML'):
+                # Verificar se já está expandido (tem o atributo 'open')
+                details_element = self.driver.find_element(By.ID, "detalhe")
+                if 'open' not in details_element.get_attribute('outerHTML'):
                     summary.click()
-                    time.sleep(1)
+                    time.sleep(0.5)
+                    self.logger.info("Material externo expandido")
             except:
+                self.logger.info("Material externo já expandido ou não encontrado")
                 pass
             
-            secoes = self.driver.find_elements(By.CSS_SELECTOR, "details#detalhe a[target='_blank']")
+            # Buscar TODOS os links das seções
+            secoes_elements = self.driver.find_elements(
+                By.CSS_SELECTOR, 
+                "details#detalhe a[target='_blank']"
+            )
+            
+            secoes = []
+            
+            for elemento in secoes_elements:
+                nome = elemento.text.strip()
+                if nome:
+                    secoes.append({
+                        'nome': nome,
+                        'elemento': elemento
+                    })
+            
+            self.logger.info(f"Encontradas {len(secoes)} seções: {[s['nome'] for s in secoes]}")
+            return secoes
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao obter seções do material externo: {e}")
+            return []
+
+    def processar_todas_secoes_material_externo(self):
+        """
+        Processa TODAS as seções do material externo sequencialmente
+        VERSÃO SEGURA: Mantém a guia principal sempre aberta
+        
+        Returns:
+            bool: True se todas as seções foram processadas, False se houve erro
+        """
+        try:
+            # Obter todas as seções
+            secoes = self.obter_todas_secoes_material_externo()
             
             if not secoes:
-                logger.info("Nenhuma seção encontrada")
-                return True
+                self.logger.warning("Nenhuma seção encontrada no material externo")
+                print("⚠ Nenhuma seção encontrada no material externo")
+                return False
             
-            logger.info(f"📚 Total: {len(secoes)} seção(ões)")
-            janela_principal = self.driver.current_window_handle
+            total_secoes = len(secoes)
+            self.logger.info(f"Iniciando processamento de {total_secoes} seções")
+            print(f"\n📚 Encontradas {total_secoes} seções no material externo")
             
-            for idx, secao in enumerate(secoes, 1):
+            # Guardar a guia principal (disciplina) - CRÍTICO
+            guia_principal = self.driver.current_window_handle
+            self.logger.info(f"Guia principal salva: {guia_principal}")
+            
+            # Processar cada seção
+            for i, secao in enumerate(secoes, 1):
+                print(f"\n📖 Processando seção {i}/{total_secoes}: {secao['nome']}")
+                self.logger.info(f"Processando seção {i}/{total_secoes}: {secao['nome']}")
+                
                 try:
-                    titulo = secao.text.strip()
-                    logger.info(f"📖 Seção {idx}/{len(secoes)}: {titulo}")
+                    # ✅ ESTRATÉGIA SEGURA: Abrir em nova guia sem sair da atual
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", secao['elemento'])
+                    time.sleep(0.5)
                     
-                    secao.click()
-                    time.sleep(2)
+                    # ✅ IMPORTANTE: não use window.open(href) aqui, pois isso NÃO dispara o onclick do link.
+                    # No Colabora, o onclick geralmente chama saveProgressoEngajamento(...),
+                    # que é o que registra a leitura/conclusão. Então clicamos no <a> e esperamos a nova guia.
+                    handles_antes = set(self.driver.window_handles)
+                    self.driver.execute_script("arguments[0].click();", secao['elemento'])
                     
-                    janelas = self.driver.window_handles
-                    if len(janelas) > 1:
-                        nova_janela = [j for j in janelas if j != janela_principal][0]
-                        self.driver.switch_to.window(nova_janela)
-                        
-                        self.rolar_pagina_automaticamente()
-                        
-                        self.driver.close()
-                        self.driver.switch_to.window(janela_principal)
-                        logger.info(f"✅ Seção {idx} concluída!")
-                        time.sleep(1)
+                    # Aguardar abrir nova guia
+                    nova_guia = None
+                    for _ in range(40):  # ~10s
+                        handles_agora = set(self.driver.window_handles)
+                        diff = list(handles_agora - handles_antes)
+                        if diff:
+                            nova_guia = diff[0]
+                            break
+                        time.sleep(0.25)
+                    
+                    if not nova_guia:
+                        self.logger.error("Nova guia não foi aberta!")
+                        print("✗ Nova guia não foi aberta!")
+                        continue
+                    
+                    self.driver.switch_to.window(nova_guia)
+                    self.logger.info(f"Nova guia acessada para: {secao['nome']}")
+                    
+                    # Aguardar carregamento
+                    self.logger.info("Aguardando carregamento da seção...")
+                    time.sleep(3)
+                    
+                    # Verificar iframe
+                    try:
+                        iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                        if iframes:
+                            self.logger.info(f"Encontrados {len(iframes)} iframes. Mudando para o primeiro...")
+                            self.driver.switch_to.frame(iframes[0])
+                            time.sleep(1)
+                    except Exception as e:
+                        self.logger.info(f"Nenhum iframe encontrado ou erro: {e}")
+                    
+                    # Rolar até o final
+                    self.rolar_pagina_automaticamente(intervalo=1)
+                    
+                    # ✅ FECHAR APENAS A GUIA DA SEÇÃO (mantém principal)
+                    self.driver.close()
+                    self.logger.info(f"Guia da seção {i} fechada")
+                    
+                    # ✅ VOLTAR PARA GUIA PRINCIPAL IMEDIATAMENTE
+                    self.driver.switch_to.window(guia_principal)
+                    self.logger.info(f"Voltou para guia principal após seção {i}")
+                    
+                    self.logger.info(f"Seção {i} concluída: {secao['nome']}")
+                    print(f"✓ Seção {i} concluída: {secao['nome']}")
+                    
+                    # Pequena pausa entre seções para estabilidade
+                    time.sleep(1)
                     
                 except Exception as e:
-                    logger.error(f"Erro seção {idx}: {e}")
+                    self.logger.error(f"Erro ao processar seção {i}: {e}")
+                    print(f"✗ Erro ao processar seção {i}: {e}")
+                    
+                    # ✅ RECUPERAÇÃO: Tentar voltar para guia principal mesmo com erro
                     try:
-                        self.driver.switch_to.window(janela_principal)
-                    except:
-                        pass
-                    continue
+                        self.driver.switch_to.window(guia_principal)
+                        self.logger.info("Recuperação: Voltou para guia principal após erro")
+                    except Exception as recovery_error:
+                        self.logger.error(f"Erro na recuperação: {recovery_error}")
+                    
+                    return False
             
-            logger.info("🎉 Seções processadas!")
+            self.logger.info(f"Todas as {total_secoes} seções foram processadas com sucesso")
+            print(f"✅ Todas as {total_secoes} seções foram processadas!")
             return True
+            
         except Exception as e:
-            logger.error(f"Erro geral: {e}")
+            self.logger.error(f"Erro geral ao processar seções: {e}")
+            print(f"✗ Erro ao processar seções: {e}")
+            
+            # Tentar voltar para guia principal em caso de erro geral
+            try:
+                self.driver.switch_to.window(guia_principal)
+            except:
+                pass
             return False
     
-    def rolar_pagina_automaticamente(self):
+    def rolar_pagina_automaticamente(self, intervalo=1):
+        """Rola a página automaticamente até o final"""
         try:
-            logger.info("Rolando página...")
-            time.sleep(2)
-            ultima_altura = self.driver.execute_script("return document.body.scrollHeight")
-            tentativas = 0
-            max_tentativas = 20
+            self.logger.info(f"Iniciando rolagem automática (intervalo: {intervalo}s)")
+            print(f"\n→ Iniciando rolagem automática...")
             
-            while tentativas < max_tentativas:
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(1.5)
-                tentativas += 1
+            rolagens = 0
+            pixels_por_rolagem = 500
+            
+            while True:
+                altura_total = self.driver.execute_script("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);")
+                altura_janela = self.driver.execute_script("return window.innerHeight;")
                 
-                nova_altura = self.driver.execute_script("return document.body.scrollHeight")
+                # Rolar
+                self.driver.execute_script(f"window.scrollBy(0, {pixels_por_rolagem}); window.dispatchEvent(new Event('scroll'));")
+                time.sleep(intervalo)
                 
-                if nova_altura == ultima_altura:
-                    logger.info("✅ Página carregada!")
+                posicao = self.driver.execute_script("return window.pageYOffset;")
+                rolagens += 1
+                
+                progresso = int(((posicao + altura_janela) / altura_total) * 100) if altura_total > 0 else 100
+                self.logger.info(f"Rolagem #{rolagens} - Progresso: {progresso}%")
+                print(f"  ✓ Rolagem #{rolagens} - {progresso}%")
+                
+                # Verificar se chegou ao final (viewport encostou no fim)
+                if (posicao + altura_janela) >= (altura_total - 2):
+                    # Força scroll no "bottom" real e espera um pouco para o portal contabilizar
+                    self.driver.execute_script(
+                        "window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));"
+                        "window.dispatchEvent(new Event('scroll')); document.dispatchEvent(new Event('scroll'));"
+                    )
+                    time.sleep(max(intervalo, 1.0))
+
+                    # Recalcula progresso final (garante 100% quando bateu no fim)
+                    altura_total2 = self.driver.execute_script(
+                        "return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);"
+                    )
+                    altura_janela2 = self.driver.execute_script("return window.innerHeight;")
+                    posicao2 = self.driver.execute_script("return window.pageYOffset;")
+                    progresso2 = int(((posicao2 + altura_janela2) / altura_total2) * 100) if altura_total2 > 0 else 100
+                    if progresso2 < 100 and (posicao2 + altura_janela2) >= (altura_total2 - 1):
+                        progresso2 = 100
+
+                    self.logger.info(
+                        f"Fim da página alcançado. Total de rolagens: {rolagens} | Progresso final: {progresso2}%"
+                    )
+                    print(f"✓ Fim da página! Total: {rolagens} rolagens | Progresso final: {progresso2}%")
+
+                    # Linger no fim
+                    time.sleep(2)
                     break
-                
-                ultima_altura = nova_altura
             
-            time.sleep(2)
             return True
+            
         except Exception as e:
-            logger.error(f"Erro ao rolar: {e}")
+            self.logger.error(f"Erro durante rolagem: {e}")
+            print(f"✗ Erro durante rolagem: {e}")
             return False
     
     def voltar_para_disciplina(self):
+        """Volta para a página da disciplina de forma segura"""
         try:
-            logger.info("🔙 Voltando para timeline...")
+            self.logger.info("Voltando para disciplina...")
+            print("\n→ Voltando para disciplina...")
             
-            if "timeline" in self.driver.current_url:
-                logger.info("✅ Já está na timeline!")
+            # ✅ VERIFICAR SESSÃO ANTES DE QUALQUER OPERAÇÃO
+            if not self.verificar_sessao_valida():
+                self.logger.error("Sessão invalidada ao tentar voltar para disciplina")
+                return False
+            
+            # Verificar URL atual para debug
+            current_url = self.driver.current_url
+            self.logger.info(f"URL atual antes de voltar: {current_url}")
+            
+            # Se já estamos na timeline, não precisa fazer nada
+            if "timeline" in current_url:
+                self.logger.info("Já está na timeline da disciplina")
+                print("✓ Já está na timeline da disciplina")
                 return True
             
+            # Tentar voltar via breadcrumb
             try:
                 breadcrumb = self.driver.find_element(By.CSS_SELECTOR, ".breadcrumb li:nth-last-child(2) a")
                 breadcrumb.click()
-                time.sleep(3)
+                self.logger.info("Retornou para a timeline da disciplina via breadcrumb")
+                print("✓ Retornou para a timeline da disciplina")
+                time.sleep(2)
                 return True
-            except:
+            except Exception as e:
+                self.logger.info(f"Breadcrumb não encontrado: {e}")
+            
+            # Tentar voltar via botão voltar do navegador
+            try:
                 self.driver.back()
-                time.sleep(3)
-                return True
-        except:
+                self.logger.info("Voltou via navegador back()")
+                time.sleep(2)
+                
+                # Verificar se voltou para timeline
+                if "timeline" in self.driver.current_url:
+                    self.logger.info("Voltou com sucesso para timeline")
+                    print("✓ Voltou para timeline via navegador")
+                    return True
+            except Exception as e:
+                self.logger.error(f"Erro ao voltar via navegador: {e}")
+            
+            self.logger.warning("Não foi possível voltar para timeline, mas continuando...")
+            print("⚠ Não foi possível voltar para timeline, continuando...")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao voltar para disciplina: {e}")
+            print(f"✗ Erro ao voltar: {e}")
             return False
     
-    def limpar_cache(self):
-        """Limpa cache do Chrome"""
-        try:
-            logger.info("🧹 Limpando cache...")
-            self.driver.execute_cdp_cmd('Network.clearBrowserCache', {})
-            self.driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
-            logger.info("✅ Cache limpo!")
-        except Exception as e:
-            logger.warning(f"Erro ao limpar cache: {e}")
-    
     def fechar(self):
-        try:
-            logger.info("Fechando Chrome...")
-            self.driver.quit()
-            logger.info("Chrome fechado!")
-        except Exception as e:
-            logger.error(f"Erro ao fechar: {e}")
+        """Fecha o navegador"""
+        self.logger.info("Encerrando bot...")
+        print("\n→ Encerrando bot...")
+        
+        # Salvar log final
+        self.logger.info("=== BOT ENCERRADO ===")
+        
+        self.driver.quit()
+        print("✓ Bot encerrado!")
+        print(f"📄 Log salvo em: {self.log_filename}")
 
-# ============================================================================
-# COMANDOS DO BOT TELEGRAM
-# ============================================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /start"""
-    await update.message.reply_text(
-        "🤖 <b>Bot ColaboraRead</b>\n\n"
-        "Comandos:\n"
-        "/iniciar - Iniciar automação\n"
-        "/ajuda - Ver ajuda\n"
-        "/status - Ver status",
-        parse_mode='HTML'
-    )
-
-async def iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /iniciar"""
-    global bot_selenium, disciplinas_cache
-    
-    await update.message.reply_text("🔧 Inicializando...")
-    
-    try:
-        bot_selenium = PortalBot()
-        
-        await update.message.reply_text("🔐 Fazendo login...")
-        if not bot_selenium.fazer_login():
-            await update.message.reply_text("❌ Erro no login!")
-            bot_selenium.fechar()
-            return ConversationHandler.END
-        
-        await update.message.reply_text("✅ Login OK!\n🌾 Acessando Agronomia...")
-        if not bot_selenium.entrar_curso_agronomia():
-            await update.message.reply_text("❌ Erro ao acessar curso!")
-            bot_selenium.fechar()
-            return ConversationHandler.END
-        
-        await update.message.reply_text("📚 Listando disciplinas...")
-        disciplinas_cache = bot_selenium.listar_disciplinas()
-        
-        if not disciplinas_cache:
-            await update.message.reply_text("❌ Nenhuma disciplina encontrada!")
-            bot_selenium.fechar()
-            return ConversationHandler.END
-        
-        # Criar teclado
-        keyboard = [[str(i+1)] for i in range(len(disciplinas_cache))]
-        keyboard.append(["❌ Cancelar"])
-        
-        disciplinas_text = "\n".join([f"{i+1}. {d['nome']}" for i, d in enumerate(disciplinas_cache)])
-        
-        await update.message.reply_text(
-            f"📚 <b>Escolha uma disciplina:</b>\n\n{disciplinas_text}\n\n"
-            "Digite o número:",
-            parse_mode='HTML',
-            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-        )
-        
-        return ESCOLHER_DISCIPLINA
-        
-    except Exception as e:
-        logger.error(f"Erro: {e}")
-        await update.message.reply_text(f"❌ Erro: {str(e)}")
-        if bot_selenium:
-            bot_selenium.fechar()
-        return ConversationHandler.END
-
-async def escolher_disciplina(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Processa escolha"""
-    global bot_selenium, disciplinas_cache
-    
-    escolha = update.message.text
-    
-    if escolha == "❌ Cancelar":
-        await update.message.reply_text("❌ Cancelado!", reply_markup=ReplyKeyboardRemove())
-        if bot_selenium:
-            bot_selenium.fechar()
-        return ConversationHandler.END
-    
-    try:
-        indice = int(escolha) - 1
-        
-        if indice < 0 or indice >= len(disciplinas_cache):
-            await update.message.reply_text("❌ Número inválido!")
-            return ESCOLHER_DISCIPLINA
-        
-        disciplina = disciplinas_cache[indice]
-        
-        await update.message.reply_text(
-            f"🎯 Disciplina: {disciplina['nome']}\n\n⏳ Processando...",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        
-        # Processar
-        if not bot_selenium.acessar_disciplina(disciplina):
-            await update.message.reply_text("❌ Erro ao acessar!")
-            bot_selenium.fechar()
-            return ConversationHandler.END
-        
-        if not bot_selenium.configurar_filtros_conteudo_web():
-            await update.message.reply_text("❌ Erro nos filtros!")
-            bot_selenium.fechar()
-            return ConversationHandler.END
-        
-        total_cw = bot_selenium.contar_atividades_cw()
-        
-        if total_cw == 0:
-            await update.message.reply_text("⚠️ Nenhuma atividade CW!")
-            bot_selenium.fechar()
-            return ConversationHandler.END
-        
-        await update.message.reply_text(f"📚 {total_cw} atividades CW!\n\n🚀 Processando...")
-        
-        # Processar cada atividade
-        for i in range(total_cw):
-            percentage = ((i+1) / total_cw) * 100
-            await update.message.reply_text(
-                f"📊 <b>Progresso: {i+1}/{total_cw} ({percentage:.1f}%)</b>",
-                parse_mode='HTML'
-            )
-            
-            atividade = bot_selenium.obter_atividade_cw_por_indice(i)
-            if atividade:
-                await update.message.reply_text(f"📖 {atividade['titulo']}")
-                
-                if bot_selenium.acessar_atividade(atividade):
-                    bot_selenium.processar_todas_secoes()
-                    bot_selenium.voltar_para_disciplina()
-                    bot_selenium.configurar_filtros_conteudo_web()
-                    bot_selenium.limpar_cache()
-                    
-                    await update.message.reply_text(f"✅ {atividade['titulo']} concluída!")
-        
-        await update.message.reply_text(f"🎉 <b>Todas as {total_cw} atividades concluídas!</b>", parse_mode='HTML')
-        
-        bot_selenium.fechar()
-        bot_selenium = None
-        
-        return ConversationHandler.END
-        
-    except ValueError:
-        await update.message.reply_text("❌ Digite apenas números!")
-        return ESCOLHER_DISCIPLINA
-    except Exception as e:
-        logger.error(f"Erro: {e}")
-        await update.message.reply_text(f"❌ Erro: {str(e)}")
-        if bot_selenium:
-            bot_selenium.fechar()
-        return ConversationHandler.END
-
-async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancela"""
-    global bot_selenium
-    await update.message.reply_text("❌ Cancelado!", reply_markup=ReplyKeyboardRemove())
-    if bot_selenium:
-        bot_selenium.fechar()
-        bot_selenium = None
-    return ConversationHandler.END
-
-async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ajuda"""
-    await update.message.reply_text(
-        "📖 <b>Ajuda</b>\n\n"
-        "1. /iniciar\n"
-        "2. Escolha disciplina\n"
-        "3. Aguarde processamento",
-        parse_mode='HTML'
-    )
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Status"""
-    global bot_selenium
-    status_text = "✅ Online!" if bot_selenium is None else "⚙️ Processando..."
-    await update.message.reply_text(f"📊 {status_text}")
-
-# ============================================================================
-# MAIN
-# ============================================================================
 
 def main():
-    """Inicia o bot"""
-    token = os.getenv('TELEGRAM_TOKEN')
+    """Função principal"""
+    bot = None
     
-    if not token:
-        logger.error("TELEGRAM_TOKEN não encontrado!")
-        return
+    try:
+        # Inicializar bot
+        bot = PortalBot(headless=False)
+        
+        # Fazer login
+        if bot.fazer_login():
+            # Entrar no curso
+            if bot.entrar_curso_agronomia():
+                # Listar disciplinas
+                disciplinas = bot.listar_disciplinas()
+                
+                if disciplinas:
+                    # ÚNICA INTERAÇÃO: Usuário escolhe a disciplina
+                    disciplina_escolhida = bot.escolher_disciplina(disciplinas)
+                    
+                    if disciplina_escolhida:
+                        # Acessar a disciplina
+                        if bot.acessar_disciplina(disciplina_escolhida):
+                            
+                            # Configurar filtros para Conteúdo WEB
+                            if bot.configurar_filtros_conteudo_web():
+                                
+                                # SALVAR HTML PARA DEBUG
+                                bot.salvar_html_pagina("debug_antes_processamento.html")
+                                
+                                # Contar quantas atividades CW existem
+                                total_cw = bot.contar_atividades_cw()
+                                
+                                if total_cw > 0:
+                                    print(f"\n{'='*60}")
+                                    print(f"✓ Encontradas {total_cw} atividades CW")
+                                    print(f"{'='*60}\n")
+                                    
+                                    # NOVO: Inicializar rastreamento de progresso (Baby Step 2)
+                                    bot.total_atividades = total_cw
+                                    bot.disciplina_atual = disciplina_escolhida['nome']
+                                    
+                                    # PROCESSAR CADA ATIVIDADE CW POR ÍNDICE
+                                    for i in range(total_cw):  # 0, 1, 2, 3 (índices)
+                                        print(f"\n{'='*60}")
+                                        print(f"PROCESSANDO {i+1}/{total_cw}")
+                                        print(f"{'='*60}")
+                                        
+                                        # NOVO: Atualizar progresso atual
+                                        bot.atividade_atual_index = i
+                                        bot.salvar_progresso()
+                                        
+                                        # ✅ VERIFICAR SESSÃO ANTES DE CADA OPERAÇÃO
+                                        if not bot.verificar_sessao_valida():
+                                            print("✗ Sessão perdida! Tentando recuperar...")
+                                            if bot.recuperar_sessao():
+                                                print("✅ Sessão recuperada! Continuando processamento...")
+                                                # Por enquanto apenas continuamos - próximo baby step tratará de voltar para a disciplina
+                                            else:
+                                                print("✗ Falha ao recuperar sessão! Reinicie o bot.")
+                                                break
+                                        
+                                        # Buscar atividade por índice específico
+                                        atividade = bot.obter_atividade_cw_por_indice(i)
+                                        
+                                        if atividade:
+                                            print(f"→ Atividade encontrada: {atividade['titulo']}")
+                                            
+                                            # Acessar atividade
+                                            if bot.acessar_atividade(atividade):
+                                                
+                                                # ✅ VERIFICAR SESSÃO ANTES DE PROCESSAR SEÇÕES
+                                                if not bot.verificar_sessao_valida():
+                                                    print("✗ Sessão perdida antes de processar seções!")
+                                                    break
+                                                
+                                                # Processar TODAS as seções do material externo
+                                                print(f"\n🔍 Verificando seções do material externo...")
+                                                if bot.processar_todas_secoes_material_externo():
+                                                    print(f"✓ Todas as seções de {atividade['titulo']} concluídas!")
+                                                else:
+                                                    print(f"⚠ Algum problema ao processar seções de {atividade['titulo']}")
+                                                
+                                                # ✅ VERIFICAR SESSÃO ANTES DE VOLTAR
+                                                if not bot.verificar_sessao_valida():
+                                                    print("✗ Sessão perdida após processar seções!")
+                                                    break
+                                                
+                                                # Voltar para a disciplina
+                                                if not bot.voltar_para_disciplina():
+                                                    print("✗ Erro ao voltar para disciplina! Sessão pode ter expirado.")
+                                                    break
+                                                
+                                                # ✅ VERIFICAR SESSÃO ANTES DE RECONFIGURAR
+                                                if not bot.verificar_sessao_valida():
+                                                    print("✗ Sessão perdida ao voltar!")
+                                                    break
+                                                
+                                                # Reconfigurar filtros
+                                                if not bot.configurar_filtros_conteudo_web():
+                                                    print("✗ Erro ao reconfigurar filtros!")
+                                                    break
+                                            
+                                            # NOVO: Salvar progresso após cada atividade concluída
+                                            bot.salvar_progresso()
+                                            print(f"\n✓ {atividade['titulo']} concluída!")
+                                        else:
+                                            print(f"✗ Não foi possível encontrar a atividade CW #{i+1}")
+                                            break  # Parar se não encontrar atividade esperada
+                                    
+                                    print(f"\n{'='*60}")
+                                    print(f"✅ TODAS AS {total_cw} ATIVIDADES CW FORAM PROCESSADAS!")
+                                    print(f"{'='*60}\n")
+                                    
+                                else:
+                                    print("\n✗ Nenhuma atividade CW encontrada")
+                else:
+                    print("\n✗ Não foi possível listar as disciplinas")
     
-    application = Application.builder().token(token).build()
+    except KeyboardInterrupt:
+        print("\n\n⚠ Interrompido pelo usuário")
+        if bot:
+            bot.logger.info("Bot interrompido pelo usuário")
     
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('iniciar', iniciar)],
-        states={
-            ESCOLHER_DISCIPLINA: [MessageHandler(filters.TEXT & ~filters.COMMAND, escolher_disciplina)],
-        },
-        fallbacks=[CommandHandler('cancelar', cancelar)],
-    )
+    except Exception as e:
+        print(f"\n✗ Erro: {e}")
+        if bot:
+            bot.logger.error(f"Erro não tratado: {e}")
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("ajuda", ajuda))
-    application.add_handler(CommandHandler("status", status))
-    
-    logger.info("🤖 Bot iniciado!")
-    application.run_polling(drop_pending_updates=True)
+    finally:
+        if bot:
+            print(f"\n📄 Log completo salvo em: {bot.log_filename}")
+            input("\n⏸ Pressione ENTER para fechar o navegador...")
+            bot.fechar()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
