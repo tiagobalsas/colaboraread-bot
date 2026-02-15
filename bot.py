@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import re
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -538,14 +539,34 @@ class PortalBot:
                     continue
 
                 try:
-                    titulo_elem = elem.find_element(By.CSS_SELECTOR, ".timeline-title small")
-                    titulo = titulo_elem.text.strip()
+                    # Título completo do card (costuma conter 'Ta1', 'Ta2' etc.)
+                    try:
+                        titulo = elem.find_element(By.CSS_SELECTOR, ".timeline-title").text.strip()
+                    except Exception:
+                        titulo = elem.text.strip()
 
-                    if titulo.lower().startswith('ta'):
+                    # Percentual (procura qualquer <small> com padrão NN%)
+                    percent = None
+                    try:
+                        smalls = elem.find_elements(By.CSS_SELECTOR, "small")
+                        percents = []
+                        for s in smalls:
+                            t = (s.text or "").strip()
+                            mm = re.search(r"(\d{1,3})\s*%", t)
+                            if mm:
+                                v = int(mm.group(1))
+                                if 0 <= v <= 100:
+                                    percents.append(v)
+                        if percents:
+                            percent = max(percents)
+                    except Exception:
+                        percent = None
+
+                    if re.search(r"\bta\s*\d+\b", titulo.lower()):
                         self.logger.info(f"Encontrada atividade TA #{ta_count}: {titulo}")
                         if ta_count == indice:
                             self.logger.info(f"Retornando atividade TA índice {indice}: {titulo}")
-                            return {'titulo': titulo, 'elemento': elem}
+                            return {'titulo': titulo, 'percent': percent, 'elemento': elem}
                         ta_count += 1
                 except Exception as e:
                     self.logger.warning(f"Erro ao processar elemento TA: {e}")
@@ -1336,6 +1357,16 @@ def main():
 
                                             if atividade:
                                                 print(f"→ Atividade encontrada: {atividade['titulo']}")
+                                                # Se já estiver 100%, pula para a próxima TA (economiza sessão/tempo)
+                                                try:
+                                                    if atividade.get('percent') == 100:
+                                                        msg_skip = f"✓ TA já está 100%: {atividade['titulo']} — pulando."
+                                                        print(msg_skip)
+                                                        bot.logger.info(msg_skip)
+                                                        continue
+                                                except Exception:
+                                                    pass
+
 
                                                 if bot.acessar_teleaula(atividade):
 
