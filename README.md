@@ -124,6 +124,16 @@ Automatizar o processamento de atividades CW (Conteúdo WEB) no portal ColaboraR
 - Filtragem por tipo de conteúdo (Conteúdo WEB)
 - Contagem total de atividades
 
+
+### 4.1 Processamento de Atividades TA (Teleaula) **(NOVO)** 🎥
+- Filtragem por tipo de conteúdo (**Teleaula**)
+- Listagem automática de TA1..TAn na timeline
+- Acesso a cada Teleaula e processamento de todos os vídeos (“Vídeo - 1..N”)
+- Reprodução automática via cliques no player (**Play** + **Forward 10s** repetidamente)  
+  > Estratégia “humana” e estável (sem dependência de API JS do player)
+- **Skip inteligente**: se a Teleaula já estiver com **`100%`** no card (ex.: `<small>100%</small>`), o bot **pula** e vai para a próxima
+- Retorno seguro para a timeline + reaplicação do filtro Teleaula entre TAs
+
 ### 5. Processamento de Seções
 - Abertura de cada seção em nova aba
 - Rolagem automática até o fim da página
@@ -216,6 +226,48 @@ Automatizar o processamento de atividades CW (Conteúdo WEB) no portal ColaboraR
 - Credenciais do portal ColaboraRead
 
 ### Variáveis de Ambiente
+
+### Execução Local (Windows/macOS/Linux) **(NOVO)**
+> Recomendado para testar mudanças antes do deploy.
+
+1. **Criar e ativar ambiente virtual**
+   - Windows (PowerShell):
+     ```bash
+     python -m venv .venv
+     .\.venv\Scripts\Activate.ps1
+     ```
+   - macOS/Linux:
+     ```bash
+     python -m venv .venv
+     source .venv/bin/activate
+     ```
+
+2. **Instalar dependências**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Configurar `.env`**
+   - Copie `env.example` para `.env` e preencha:
+     - `PORTAL_USERNAME`
+     - `PORTAL_PASSWORD`
+     - `TELEGRAM_TOKEN` (se for usar o modo Telegram)
+
+4. **Executar**
+   ```bash
+   python bot.py
+   ```
+
+5. **Escolha do modo (CW vs TA)**
+   - Ao acessar a disciplina, o bot pergunta:
+     - `1) Conteúdo WEB (CW)`
+     - `2) Teleaula (TA)`
+
+6. **Headless (sem abrir janela)**
+   - No código, altere a inicialização para `PortalBot(headless=True)` (ex.: em `main()`).
+   - Útil para rodar em servidor / Railway.
+
+
 ```env
 PORTAL_USERNAME=seu_cpf
 PORTAL_PASSWORD=sua_senha
@@ -492,7 +544,7 @@ colaboraread-bot/
 - Requer adaptação para outros cursos
 
 ### 5. Tipo de Atividade
-- Processa apenas atividades do tipo "Conteúdo WEB (CW)"
+- Processa atividades do tipo **Conteúdo WEB (CW)** e **Teleaula (TA)**
 - Outros tipos de atividades não são suportados
 
 ### 6. Tempo de Processamento
@@ -572,6 +624,11 @@ O Bot ColaboraRead é uma solução funcional e eficiente para automatizar o pro
 
 ## 📝 Changelog
 
+### v1.1 (2026-02-14) - Teleaula (TA) + Menu CW/TA
+- ✅ Suporte a **Teleaula (TA)** com reprodução via **Play + Forward 10s**
+- ✅ Skip automático de Teleaulas já em **100%**
+- ✅ Menu de execução **CW ou TA** mantendo CW intacto
+
 ### v1.0 (2025-01-20) - Release Inicial
 - ✅ Sistema de autenticação
 - ✅ Interface com Telegram
@@ -591,4 +648,4 @@ Este projeto foi desenvolvido para uso pessoal/educacional.
 
 **Desenvolvido com ❤️ em Python**
 
-*Última atualização: Novembro 2025*
+*Última atualização: Fevereiro 2026*
